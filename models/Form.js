@@ -4,6 +4,7 @@ const lineSchema = new mongoose.Schema({
   title: { type: String, required: true },
   maxScore: { type: Number, required: true },
   type: { type: String, enum: ['binary', 'scale'], required: true }, // binary = oui/non, scale = échelle graduée (0 à 8)
+  notationType: { type: String, enum: ['common', 'individual', 'mixed'], required: true }, // Type de notation
 });
 
 const sectionSchema = new mongoose.Schema({
@@ -16,7 +17,8 @@ const formSchema = new mongoose.Schema({
   title: { type: String, required: true },
   associationType: { type: String, enum: ['student', 'group'], required: true },
   students: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }],
-  groupCount: { type: Number, default: 0 },
+  groups: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Group' }],
+  groupCount: { type: Number, default: 0 }, // Déprécié, gardé pour compatibilité
   sections: [sectionSchema],
   validFrom: { type: Date, required: true },
   validTo: { type: Date, required: true },
@@ -24,12 +26,21 @@ const formSchema = new mongoose.Schema({
 
 // Validation pour garantir l'association exclusive
 formSchema.pre('save', function (next) {
-  if (this.associationType === 'student' && this.groupCount > 0) {
+  if (this.associationType === 'student' && this.groups.length > 0) {
     return next(new Error('Un formulaire ne peut pas être associé à des étudiants et des groupes en même temps.'));
   }
   if (this.associationType === 'group' && this.students.length > 0) {
     return next(new Error('Un formulaire ne peut pas être associé à des groupes et des étudiants en même temps.'));
   }
+  
+  // Vérifier qu'au moins une association existe
+  if (this.associationType === 'student' && this.students.length === 0) {
+    return next(new Error('Un formulaire pour étudiants doit être associé à au moins un étudiant.'));
+  }
+  if (this.associationType === 'group' && this.groups.length === 0) {
+    return next(new Error('Un formulaire pour groupes doit être associé à au moins un groupe.'));
+  }
+  
   next();
 });
 

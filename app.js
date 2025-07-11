@@ -19,5 +19,7 @@ app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/students', require('./routes/student.routes'));
 app.use('/api/forms', require('./routes/form.routes'));
 app.use('/api/evaluations', require('./routes/evaluation.routes'));
+app.use('/api/promotions', require('./routes/promotion.routes'));
+app.use('/api/groups', require('./routes/group.routes'));
 
 module.exports = app;

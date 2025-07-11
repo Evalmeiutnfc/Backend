@@ -9,6 +9,9 @@ const evaluationSchema = new mongoose.Schema({
     lineId: { type: mongoose.Schema.Types.ObjectId, required: true },
     score: { type: Number, required: true },
   }],
+  promotion: { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' }, // Promotion associée
+  group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group' }, // Groupe TD associé
+  subgroup: { type: String }, // Nom du sous-groupe (ex: TP1, Projet A)
 }, { timestamps: true });
 
 module.exports = mongoose.model('Evaluation', evaluationSchema);

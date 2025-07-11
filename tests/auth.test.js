@@ -23,7 +23,7 @@ describe('Routes d\'authentification', () => {
       email: 'john.doe@example.com',
       login: 'johndoe',
       password: 'password123',
-      role: 'user',
+      role: 'professor',
     });
     expect(response.status).toBe(201);
     expect(response.body.message).toBe('Utilisateur créé avec succès.');
