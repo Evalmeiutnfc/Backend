@@ -8,24 +8,24 @@ const router = express.Router();
 // Middleware pour vérifier l'authentification sur toutes les routes
 router.use(verifyToken);
 
-// Ajouter un étudiant
+// Ajouter un étudiant avec multi-appartenance
 router.post('/add', requireAdmin, async (req, res) => {
-  const { firstName, lastName, year, promotion, group, subgroup, studentNumber, isGroup } = req.body;
+  const { firstName, lastName, year, promotions, groups, studentNumber, currentPromotion, currentGroup } = req.body;
   try {
     // Validation du champ year
     if (!['BUT1', 'BUT2', 'BUT3'].includes(year)) {
       return res.status(400).json({ message: 'Année invalide. Doit être BUT1, BUT2 ou BUT3.' });
     }
     
-    const student = new Student({ 
-      firstName, 
-      lastName, 
-      year, 
-      promotion, 
-      group, 
-      subgroup, 
-      studentNumber, 
-      isGroup 
+    const student = new Student({
+      firstName,
+      lastName,
+      year,
+      promotions,
+      groups,
+      studentNumber,
+      currentPromotion,
+      currentGroup
     });
     await student.save();
     res.status(201).json({ message: 'Étudiant ajouté avec succès.', student });
@@ -45,13 +45,16 @@ router.get('/list', async (req, res) => {
     // Filtres
     const filter = {};
     if (year) filter.year = year;
-    if (group) filter.group = group;
-    if (promotion) filter.promotion = promotion;
-    if (subgroup) filter.subgroup = subgroup;
+    if (group) filter.groups = group;
+    if (promotion) filter.promotions = promotion;
+    if (subgroup) filter.subgroups = subgroup;
     
     const students = await Student.find(filter)
-      .populate('promotion', 'name year')
-      .populate('group', 'name year')
+      .populate('promotions', 'name year')
+      .populate('groups', 'name year')
+      .populate('currentPromotion', 'name year')
+      .populate('currentGroup', 'name year')
+      .populate('subgroups', 'name type')
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 });
@@ -77,7 +80,7 @@ router.get('/list', async (req, res) => {
 // Modifier un étudiant
 router.put('/update/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { firstName, lastName, year, promotion, group, subgroup, studentNumber, isGroup } = req.body;
+  const { firstName, lastName, year, promotions, groups, subgroups, studentNumber, currentPromotion, currentGroup } = req.body;
   try {
     // Validation du champ year si fourni
     if (year && !['BUT1', 'BUT2', 'BUT3'].includes(year)) {
@@ -86,9 +89,9 @@ router.put('/update/:id', requireAdmin, async (req, res) => {
     
     const student = await Student.findByIdAndUpdate(
       id, 
-      { firstName, lastName, year, promotion, group, subgroup, studentNumber, isGroup }, 
+      { firstName, lastName, year, promotions, groups, subgroups, studentNumber, currentPromotion, currentGroup }, 
       { new: true }
-    ).populate('promotion', 'name year').populate('group', 'name year');
+    ).populate('promotions', 'name year').populate('groups', 'name year').populate('currentPromotion', 'name year').populate('currentGroup', 'name year').populate('subgroups', 'name type');
     
     if (!student) {
       return res.status(404).json({ message: 'Étudiant non trouvé.' });
@@ -117,24 +120,31 @@ router.delete('/delete/:id', requireAdmin, async (req, res) => {
 router.get('/:id/context', async (req, res) => {
   try {
     const student = await Student.findById(req.params.id)
-      .populate('promotion', 'name year')
-      .populate('group', 'name year');
+      .populate('promotions', 'name year')
+      .populate('groups', 'name year')
+      .populate('subgroups', 'name type');
     
     if (!student) {
       return res.status(404).json({ message: 'Étudiant non trouvé' });
     }
     
-    // Récupérer le sous-groupe
-    const group = await Group.findById(student.group).populate('subgroups.students');
-    let subgroupInfo = null;
-    
-    if (group && student.subgroup) {
-      const subgroup = group.subgroups.find(sg => sg.name === student.subgroup);
-      if (subgroup) {
-        subgroupInfo = {
-          name: subgroup.name,
-          studentsCount: subgroup.students.length
-        };
+    // Récupérer les sous-groupes
+    let subgroupsInfo = [];
+    if (student.groups && student.groups.length > 0) {
+      for (const groupId of student.groups) {
+        const group = await Group.findById(groupId).populate('subgroups.students');
+        if (group && student.subgroups) {
+          student.subgroups.forEach(subgroupName => {
+            const subgroup = group.subgroups.find(sg => sg.name === subgroupName);
+            if (subgroup) {
+              subgroupsInfo.push({
+                name: subgroup.name,
+                studentsCount: subgroup.students.length,
+                groupName: group.name
+              });
+            }
+          });
+        }
       }
     }
     
@@ -144,17 +154,34 @@ router.get('/:id/context', async (req, res) => {
         firstName: student.firstName,
         lastName: student.lastName,
         studentNumber: student.studentNumber,
-        year: student.year,
-        isGroup: student.isGroup
+        year: student.year
       },
       hierarchy: {
-        promotion: student.promotion,
-        group: student.group,
-        subgroup: subgroupInfo
+        promotions: student.promotions,
+        groups: student.groups,
+        subgroups: subgroupsInfo
       }
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// Mettre à jour les affiliations d'un étudiant
+router.put('/:id/update-affiliations', requireAdmin, async (req, res) => {
+  const { promotions, groups, subgroups } = req.body;
+  try {
+    const student = await Student.findById(req.params.id);
+    if (!student) return res.status(404).json({ message: 'Étudiant non trouvé.' });
+
+    student.promotions = promotions || student.promotions;
+    student.groups = groups || student.groups;
+    student.subgroups = subgroups || student.subgroups;
+
+    await student.save();
+    res.json({ message: 'Affiliations mises à jour avec succès.', student });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
 });
 

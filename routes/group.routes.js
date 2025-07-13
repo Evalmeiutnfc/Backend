@@ -12,19 +12,22 @@ router.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const { year, promotion } = req.query;
+    const { promotion } = req.query;
     const skip = (page - 1) * limit;
+    
     // Filtres
     const filter = {};
-    if (year) filter.year = year;
     if (promotion) filter.promotion = promotion;
+    
     const groups = await Group.find(filter)
-      .populate('promotion')
-      .populate('subgroups.students')
+      .populate('promotion', 'name year')
+      .populate('subgroups', 'name type')
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 });
+      
     const total = await Group.countDocuments(filter);
+    
     res.json({
       groups,
       pagination: {
@@ -41,48 +44,53 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /groups - Créer un nouveau groupe
+// POST /groups/add - Créer un nouveau groupe
 router.post('/add', requireAdmin, async (req, res) => {
   try {
-    const { name, year, promotion, subgroups } = req.body;
+    const { name, promotion, description } = req.body;
+    
+    // Validation des champs requis
+    if (!name || !promotion) {
+      return res.status(400).json({ 
+        message: 'Les champs name et promotion sont requis.' 
+      });
+    }
+    
     const group = new Group({
       name,
-      year,
       promotion,
-      subgroups: Array.isArray(subgroups) ? subgroups : []
+      description
     });
+    
     await group.save();
-    res.status(201).json(group);
+    
+    // Populer les données pour la réponse
+    await group.populate('promotion', 'name year');
+    
+    res.status(201).json({
+      message: 'Groupe créé avec succès.',
+      group
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 });
 
-// POST /groups/:groupId/subgroups - Ajouter un sous-groupe à un groupe TD
+// POST /groups/:groupId/subgroups - Ajouter un sous-groupe à un groupe TD (obsolète - utiliser /api/subgroups/add)
 router.post('/:groupId/subgroups', requireAdmin, async (req, res) => {
-  try {
-    const { name, students } = req.body;
-    const group = await Group.findById(req.params.groupId);
-    if (!group) {
-      return res.status(404).json({ message: 'Groupe TD non trouvé' });
-    }
-    if (!Array.isArray(group.subgroups)) group.subgroups = [];
-    group.subgroups.push({ name, students });
-    await group.save();
-    res.status(201).json(group);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+  res.status(410).json({ 
+    message: 'Cette route est obsolète. Utilisez POST /api/subgroups/add pour créer un sous-groupe.',
+    newEndpoint: 'POST /api/subgroups/add'
+  });
 });
 
 // GET /groups/:groupId/subgroups - Lister les sous-groupes d'un groupe TD
 router.get('/:groupId/subgroups', verifyToken, async (req, res) => {
   try {
-    const group = await Group.findById(req.params.groupId).populate('subgroups.students');
-    if (!group) {
-      return res.status(404).json({ message: 'Groupe TD non trouvé' });
-    }
-    res.json(group.subgroups);
+    const SubGroup = require('../models/SubGroup');
+    const subgroups = await SubGroup.find({ group: req.params.groupId })
+      .populate('students', 'firstName lastName studentNumber');
+    res.json(subgroups);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -91,13 +99,91 @@ router.get('/:groupId/subgroups', verifyToken, async (req, res) => {
 // DELETE /groups/:groupId/subgroups/:subgroupId - Supprimer un sous-groupe
 router.delete('/:groupId/subgroups/:subgroupId', requireAdmin, async (req, res) => {
   try {
-    const group = await Group.findById(req.params.groupId);
-    if (!group) {
-      return res.status(404).json({ message: 'Groupe TD non trouvé' });
+    const SubGroup = require('../models/SubGroup');
+    const subgroup = await SubGroup.findOneAndDelete({ 
+      _id: req.params.subgroupId, 
+      group: req.params.groupId 
+    });
+    if (!subgroup) {
+      return res.status(404).json({ message: 'Sous-groupe non trouvé' });
     }
-    group.subgroups = group.subgroups.filter(subgroup => subgroup._id.toString() !== req.params.subgroupId);
-    await group.save();
     res.json({ message: 'Sous-groupe supprimé avec succès' });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Ajouter un sous-groupe à un groupe (obsolète - utiliser /api/subgroups/add)
+router.post('/:id/add-subgroup', requireAdmin, async (req, res) => {
+  res.status(410).json({ 
+    message: 'Cette route est obsolète. Utilisez POST /api/subgroups/add pour créer un sous-groupe.',
+    newEndpoint: 'POST /api/subgroups/add'
+  });
+});
+
+// GET /groups/:id - Récupérer un groupe spécifique
+router.get('/:id', verifyToken, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id)
+      .populate('promotion', 'name year')
+      .populate('subgroups', 'name type students');
+      
+    if (!group) {
+      return res.status(404).json({ message: 'Groupe non trouvé.' });
+    }
+    
+    res.json(group);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// PUT /groups/update/:id - Mettre à jour un groupe
+router.put('/update/:id', requireAdmin, async (req, res) => {
+  try {
+    const { name, promotion, description } = req.body;
+    
+    const updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (promotion !== undefined) updateData.promotion = promotion;
+    if (description !== undefined) updateData.description = description;
+    
+    const group = await Group.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    ).populate('promotion', 'name year').populate('subgroups', 'name type');
+    
+    if (!group) {
+      return res.status(404).json({ message: 'Groupe non trouvé.' });
+    }
+    
+    res.json({
+      message: 'Groupe mis à jour avec succès.',
+      group
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// DELETE /groups/delete/:id - Supprimer un groupe
+router.delete('/delete/:id', requireAdmin, async (req, res) => {
+  try {
+    const group = await Group.findById(req.params.id);
+    if (!group) {
+      return res.status(404).json({ message: 'Groupe non trouvé.' });
+    }
+    
+    // Vérifier s'il y a des sous-groupes associés
+    if (group.subgroups && group.subgroups.length > 0) {
+      return res.status(400).json({ 
+        message: 'Impossible de supprimer le groupe. Il contient des sous-groupes. Supprimez d\'abord les sous-groupes.' 
+      });
+    }
+    
+    await Group.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Groupe supprimé avec succès.' });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -11,7 +11,7 @@ const evaluationSchema = new mongoose.Schema({
   }],
   promotion: { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' }, // Promotion associée
   group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group' }, // Groupe TD associé
-  subgroup: { type: String }, // Nom du sous-groupe (ex: TP1, Projet A)
+  subgroup: { type: mongoose.Schema.Types.ObjectId, ref: 'SubGroup' }, // Sous-groupe associé
 }, { timestamps: true });
 
 module.exports = mongoose.model('Evaluation', evaluationSchema);

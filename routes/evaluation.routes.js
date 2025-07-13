@@ -52,7 +52,8 @@ router.post('/add', requireProfessorOrAdmin, async (req, res) => {
       { path: 'professor', select: 'firstName lastName' },
       { path: 'student', select: 'firstName lastName studentNumber' },
       { path: 'promotion', select: 'name year' },
-      { path: 'group', select: 'name year' }
+      { path: 'group', select: 'name' },
+      { path: 'subgroup', select: 'name type' }
     ]);
     
     res.status(201).json({ message: 'Évaluation créée avec succès.', evaluation });
@@ -105,7 +106,8 @@ router.put('/update/:id', requireProfessorOrAdmin, async (req, res) => {
       { path: 'professor', select: 'firstName lastName' },
       { path: 'student', select: 'firstName lastName studentNumber' },
       { path: 'promotion', select: 'name year' },
-      { path: 'group', select: 'name year' }
+      { path: 'group', select: 'name' },
+      { path: 'subgroup', select: 'name type' }
     ]);
     
     res.status(200).json({ message: 'Évaluation mise à jour avec succès.', evaluation: updatedEvaluation });
@@ -118,14 +120,66 @@ router.put('/update/:id', requireProfessorOrAdmin, async (req, res) => {
 router.get('/export/:formId', async (req, res) => {
   const { formId } = req.params;
   try {
-    const form = await Form.findById(formId).populate('students');
+    const form = await Form.findById(formId)
+      .populate('students', 'firstName lastName studentNumber')
+      .populate('groups', 'name')
+      .populate('subgroups', 'name type')
+      .populate('promotion', 'name year');
+      
     if (!form) {
       return res.status(404).json({ message: 'Formulaire non trouvé.' });
     }
-    const csvData = form.exportToCSV();
+
+    // Récupérer toutes les évaluations pour ce formulaire
+    const evaluations = await Evaluation.find({ form: formId })
+      .populate('student', 'firstName lastName studentNumber')
+      .populate('promotion', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type');
+
+    // Créer le CSV avec les données réelles d'évaluation
+    const csvRows = [];
+    
+    // En-tête avec les titres des lignes
+    const headers = ['Étudiant/Entité'];
+    form.sections.forEach(section => {
+      section.lines.forEach(line => {
+        headers.push(`${section.title} - ${line.title} (/${line.maxScore})`);
+      });
+    });
+    csvRows.push(headers.join(','));
+
+    // Données selon le type d'association du formulaire
+    if (form.associationType === 'student' && form.students) {
+      form.students.forEach(student => {
+        const studentEvals = evaluations.filter(e => e.student && e.student._id.toString() === student._id.toString());
+        const row = [`${student.firstName} ${student.lastName} (${student.studentNumber})`];
+        
+        form.sections.forEach(section => {
+          section.lines.forEach(line => {
+            const score = studentEvals.find(e => e.scores.some(s => s.lineId.toString() === line._id.toString()));
+            if (score) {
+              const lineScore = score.scores.find(s => s.lineId.toString() === line._id.toString());
+              row.push(lineScore ? lineScore.score : 0);
+            } else {
+              row.push(0);
+            }
+          });
+        });
+        
+        csvRows.push(row.join(','));
+      });
+    } else {
+      // Pour les autres types d'association, utiliser la méthode existante
+      const csvData = form.exportToCSV();
+      res.header('Content-Type', 'text/csv');
+      res.attachment(`${form.title}-evaluations.csv`);
+      return res.send(csvData);
+    }
+
     res.header('Content-Type', 'text/csv');
     res.attachment(`${form.title}-evaluations.csv`);
-    res.send(csvData);
+    res.send(csvRows.join('\n'));
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
@@ -144,7 +198,8 @@ router.get('/list/:formId', async (req, res) => {
       .populate('student', 'firstName lastName studentNumber')
       .populate('form', 'title associationType')
       .populate('promotion', 'name year')
-      .populate('group', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type')
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 });
@@ -179,7 +234,8 @@ router.get('/professor/:professorId', async (req, res) => {
       .populate('student', 'firstName lastName studentNumber')
       .populate('form', 'title validFrom validTo associationType')
       .populate('promotion', 'name year')
-      .populate('group', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type')
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 });
@@ -211,7 +267,8 @@ router.get('/:id', async (req, res) => {
       .populate('student', 'firstName lastName studentNumber')
       .populate('form', 'title associationType sections')
       .populate('promotion', 'name year')
-      .populate('group', 'name year');
+      .populate('group', 'name')
+      .populate('subgroup', 'name type');
     
     if (!evaluation) {
       return res.status(404).json({ message: 'Évaluation non trouvée.' });
@@ -378,8 +435,9 @@ router.get('/', async (req, res) => {
       .populate('form', 'title associationType')
       .populate('professor', 'firstName lastName')
       .populate('student', 'firstName lastName studentNumber')
-      .populate('group', 'name year')
+      .populate('group', 'name')
       .populate('promotion', 'name year')
+      .populate('subgroup', 'name type')
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 });
@@ -395,6 +453,260 @@ router.get('/', async (req, res) => {
         pages: Math.ceil(total / limit),
         hasNextPage: page < Math.ceil(total / limit),
         hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /evaluations/by-promotion/:promotionId - Lister les évaluations d'une promotion
+router.get('/by-promotion/:promotionId', async (req, res) => {
+  try {
+    const { promotionId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const evaluations = await Evaluation.find({ promotion: promotionId })
+      .populate('form', 'title associationType')
+      .populate('professor', 'firstName lastName')
+      .populate('student', 'firstName lastName studentNumber')
+      .populate('promotion', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type')
+      .limit(limit)
+      .skip(skip)
+      .sort({ createdAt: -1 });
+
+    const total = await Evaluation.countDocuments({ promotion: promotionId });
+
+    res.json({
+      evaluations,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /evaluations/by-group/:groupId - Lister les évaluations d'un groupe
+router.get('/by-group/:groupId', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const evaluations = await Evaluation.find({ group: groupId })
+      .populate('form', 'title associationType')
+      .populate('professor', 'firstName lastName')
+      .populate('student', 'firstName lastName studentNumber')
+      .populate('promotion', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type')
+      .limit(limit)
+      .skip(skip)
+      .sort({ createdAt: -1 });
+
+    const total = await Evaluation.countDocuments({ group: groupId });
+
+    res.json({
+      evaluations,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /evaluations/by-subgroup/:subgroupId - Lister les évaluations d'un sous-groupe
+router.get('/by-subgroup/:subgroupId', async (req, res) => {
+  try {
+    const { subgroupId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const evaluations = await Evaluation.find({ subgroup: subgroupId })
+      .populate('form', 'title associationType')
+      .populate('professor', 'firstName lastName')
+      .populate('student', 'firstName lastName studentNumber')
+      .populate('promotion', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type')
+      .limit(limit)
+      .skip(skip)
+      .sort({ createdAt: -1 });
+
+    const total = await Evaluation.countDocuments({ subgroup: subgroupId });
+
+    res.json({
+      evaluations,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /evaluations/by-student/:studentId - Lister les évaluations d'un étudiant
+router.get('/by-student/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const evaluations = await Evaluation.find({ student: studentId })
+      .populate('form', 'title associationType')
+      .populate('professor', 'firstName lastName')
+      .populate('student', 'firstName lastName studentNumber')
+      .populate('promotion', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type')
+      .limit(limit)
+      .skip(skip)
+      .sort({ createdAt: -1 });
+
+    const total = await Evaluation.countDocuments({ student: studentId });
+
+    res.json({
+      evaluations,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNextPage: page < Math.ceil(total / limit),
+        hasPrevPage: page > 1
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// POST /evaluations/bulk-create - Créer plusieurs évaluations en une fois
+router.post('/bulk-create', requireProfessorOrAdmin, async (req, res) => {
+  const { formId, professorId, evaluations } = req.body;
+  try {
+    if (!evaluations || !Array.isArray(evaluations) || evaluations.length === 0) {
+      return res.status(400).json({ message: 'Au moins une évaluation est requise' });
+    }
+
+    // Vérifier que le formulaire existe
+    const form = await Form.findById(formId);
+    if (!form) {
+      return res.status(404).json({ message: 'Formulaire non trouvé' });
+    }
+
+    const createdEvaluations = [];
+    const errors = [];
+
+    for (let i = 0; i < evaluations.length; i++) {
+      const evalData = evaluations[i];
+      try {
+        // Validation des scores
+        if (!evalData.scores || !Array.isArray(evalData.scores) || evalData.scores.length === 0) {
+          errors.push(`Évaluation ${i + 1}: Au moins un score est requis`);
+          continue;
+        }
+
+        const evaluation = new Evaluation({
+          form: formId,
+          professor: professorId,
+          student: evalData.studentId,
+          groupNumber: evalData.groupNumber || 0,
+          scores: evalData.scores,
+          promotion: evalData.promotion,
+          group: evalData.group,
+          subgroup: evalData.subgroup
+        });
+
+        await evaluation.save();
+        await evaluation.populate([
+          { path: 'form', select: 'title associationType' },
+          { path: 'professor', select: 'firstName lastName' },
+          { path: 'student', select: 'firstName lastName studentNumber' },
+          { path: 'promotion', select: 'name year' },
+          { path: 'group', select: 'name' },
+          { path: 'subgroup', select: 'name type' }
+        ]);
+
+        createdEvaluations.push(evaluation);
+      } catch (error) {
+        errors.push(`Évaluation ${i + 1}: ${error.message}`);
+      }
+    }
+
+    res.status(201).json({
+      message: `${createdEvaluations.length} évaluations créées avec succès`,
+      evaluations: createdEvaluations,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
+// GET /evaluations/context/:formId - Obtenir le contexte des évaluations pour un formulaire
+router.get('/context/:formId', async (req, res) => {
+  try {
+    const { formId } = req.params;
+    
+    const form = await Form.findById(formId)
+      .populate('students', 'firstName lastName studentNumber')
+      .populate('groups', 'name')
+      .populate('subgroups', 'name type')
+      .populate('promotion', 'name year');
+
+    if (!form) {
+      return res.status(404).json({ message: 'Formulaire non trouvé' });
+    }
+
+    // Récupérer les évaluations existantes pour ce formulaire
+    const existingEvaluations = await Evaluation.find({ form: formId })
+      .populate('student', 'firstName lastName studentNumber')
+      .populate('promotion', 'name year')
+      .populate('group', 'name')
+      .populate('subgroup', 'name type');
+
+    res.json({
+      form: {
+        id: form._id,
+        title: form.title,
+        associationType: form.associationType,
+        students: form.students,
+        groups: form.groups,
+        subgroups: form.subgroups,
+        promotion: form.promotion
+      },
+      existingEvaluations,
+      stats: {
+        totalEvaluations: existingEvaluations.length,
+        evaluatedStudents: [...new Set(existingEvaluations.map(e => e.student?._id?.toString()))].length
       }
     });
   } catch (error) {

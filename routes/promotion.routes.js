@@ -1,5 +1,6 @@
 const express = require('express');
 const Promotion = require('../models/Promotion');
+const Group = require('../models/Group');
 const { verifyToken, requireAdmin } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -86,10 +87,38 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     if (!promotion) {
       return res.status(404).json({ message: 'Promotion non trouvée' });
     }
-    await promotion.remove();
+    await Promotion.deleteOne({ _id: req.params.id });
     res.json({ message: 'Promotion supprimée avec succès' });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// Ajouter un groupe à une promotion
+router.post('/:id/add-group', requireAdmin, async (req, res) => {
+  const { groupId } = req.body;
+  try {
+    const promotion = await Promotion.findById(req.params.id);
+    if (!promotion) return res.status(404).json({ message: 'Promotion non trouvée.' });
+
+    if (!promotion.groups.includes(groupId)) {
+      promotion.groups.push(groupId);
+      await promotion.save();
+    }
+
+    res.json({ message: 'Groupe ajouté à la promotion avec succès.', promotion });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
+// Récupérer les groupes TD d'une promotion
+router.get('/:id/groups', async (req, res) => {
+  try {
+    const groups = await Group.find({ promotion: req.params.id });
+    res.json(groups);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
 });
 

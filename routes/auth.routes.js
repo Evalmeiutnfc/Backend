@@ -252,4 +252,34 @@ router.post('/logout', authenticate, async (req, res) => {
   res.status(200).json({ message: 'Déconnexion réussie.' });
 });
 
+// Récupérer les utilisateurs avec le rôle de professeur
+router.get('/users/professors', authenticate, async (req, res) => {
+  try {
+    const currentUser = await User.findById(req.user.id);
+    if (!currentUser || currentUser.role !== 'admin') {
+      return res.status(403).json({ message: 'Accès non autorisé. Droits administrateur requis.' });
+    }
+
+    const professors = await User.find({ role: 'professor' }).select('-password').sort({ createdAt: -1 });
+    res.status(200).json(professors);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
+// Récupérer les utilisateurs avec le rôle d'administrateur
+router.get('/users/admins', authenticate, async (req, res) => {
+  try {
+    const currentUser = await User.findById(req.user.id);
+    if (!currentUser || currentUser.role !== 'admin') {
+      return res.status(403).json({ message: 'Accès non autorisé. Droits administrateur requis.' });
+    }
+
+    const admins = await User.find({ role: 'admin' }).select('-password').sort({ createdAt: -1 });
+    res.status(200).json(admins);
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
 module.exports = router;

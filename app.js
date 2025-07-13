@@ -21,5 +21,6 @@ app.use('/api/forms', require('./routes/form.routes'));
 app.use('/api/evaluations', require('./routes/evaluation.routes'));
 app.use('/api/promotions', require('./routes/promotion.routes'));
 app.use('/api/groups', require('./routes/group.routes'));
+app.use('/api/subgroups', require('./routes/subgroup.routes'));
 
 module.exports = app;
