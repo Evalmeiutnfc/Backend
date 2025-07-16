@@ -1,6 +1,7 @@
 const express = require('express');
 const Evaluation = require('../models/Evaluation');
 const Form = require('../models/Form');
+const Student = require('../models/Student');
 const { verifyToken, requireAdmin, requireProfessorOrAdmin } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -10,30 +11,50 @@ router.use(verifyToken);
 
 // Créer une évaluation
 router.post('/add', requireProfessorOrAdmin, async (req, res) => {
-  const { formId, professorId, studentId, groupNumber, scores, promotion, group, subgroup } = req.body;
+  const { formId, professorId, studentId, groupNumber, scores, promotion, group, subgroup, evaluationType } = req.body;
   try {
+    console.log('Payload reçu:', req.body);
+
     // Validation des scores
     if (!scores || !Array.isArray(scores) || scores.length === 0) {
+      console.log('Erreur: Aucun score fourni ou structure invalide.');
       return res.status(400).json({ message: 'Au moins un score est requis' });
     }
-    
+
     // Validation de la structure des scores
     for (const score of scores) {
-      if (!score.lineId || typeof score.score !== 'number') {
-        return res.status(400).json({ message: 'Chaque score doit avoir un lineId et un score numérique' });
+      if (!score.lineId) {
+        console.log('Erreur: lineId manquant dans un score.');
+        return res.status(400).json({ message: 'Chaque score doit avoir un lineId.' });
       }
-      
-      if (score.score < 0) {
-        return res.status(400).json({ message: 'Les scores ne peuvent pas être négatifs' });
+
+      if (score.notationType === 'common' && typeof score.commonScore !== 'number') {
+        console.log('Erreur: commonScore invalide pour une notation commune.');
+        return res.status(400).json({ message: 'Pour une notation commune, commonScore doit être un nombre.' });
+      }
+
+      if (score.notationType === 'individual' && (!Array.isArray(score.individualScores) || score.individualScores.length === 0)) {
+        console.log('Erreur: individualScores invalide pour une notation individuelle.');
+        return res.status(400).json({ message: 'Pour une notation individuelle, individualScores doit être un tableau non vide.' });
+      }
+
+      if (score.notationType === 'mixed') {
+        if (typeof score.commonScore !== 'number' && (!Array.isArray(score.individualScores) || score.individualScores.length === 0)) {
+          console.log('Erreur: commonScore ou individualScores manquant pour une notation mixte.');
+          return res.status(400).json({ message: 'Pour une notation mixte, commonScore ou individualScores doit être défini.' });
+        }
       }
     }
-    
+
     // Vérification que le formulaire existe
     const form = await Form.findById(formId);
     if (!form) {
+      console.log('Erreur: Formulaire non trouvé.');
       return res.status(404).json({ message: 'Formulaire non trouvé' });
     }
-    
+
+    console.log('Formulaire trouvé:', form);
+
     const evaluation = new Evaluation({
       form: formId,
       professor: professorId,
@@ -42,10 +63,13 @@ router.post('/add', requireProfessorOrAdmin, async (req, res) => {
       scores,
       promotion,
       group,
-      subgroup
+      subgroup,
+      evaluationType // Ajout du champ evaluationType
     });
+
     await evaluation.save();
-    
+    console.log('Évaluation sauvegardée:', evaluation);
+
     // Populer les données pour la réponse
     await evaluation.populate([
       { path: 'form', select: 'title associationType' },
@@ -55,9 +79,10 @@ router.post('/add', requireProfessorOrAdmin, async (req, res) => {
       { path: 'group', select: 'name' },
       { path: 'subgroup', select: 'name type' }
     ]);
-    
+
     res.status(201).json({ message: 'Évaluation créée avec succès.', evaluation });
   } catch (err) {
+    console.error('Erreur serveur:', err);
     res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
 });

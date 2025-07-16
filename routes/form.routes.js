@@ -8,7 +8,7 @@ const { verifyToken, requireAdmin, requireProfessorOrAdmin } = require('../middl
 
 const router = express.Router();
 
-// Mmodule.exports = router;ier l'authentification sur toutes les routes
+// Middleware pour vérifier l'authentification sur toutes les routes
 router.use(verifyToken);
 
 // GET /forms - Lister les formulaires avec pagination
@@ -409,9 +409,9 @@ router.get('/group-evaluations/:groupNumber', async (req, res) => {
   const { groupNumber } = req.params;
   try {
     // Chercher les étudiants par groupe TD
-    const students = await Student.find({ group: groupNumber })
-      .populate('promotion', 'name year')
-      .populate('group', 'name year');
+    const students = await Student.find({ groups: groupNumber })
+      .populate('promotions', 'name year')
+      .populate('groups', 'name');
 
     if (students.length === 0) {
       return res.status(404).json({ message: 'Aucun étudiant trouvé pour ce groupe' });
@@ -558,6 +558,85 @@ router.get('/stats', async (req, res) => {
     res.json(stats);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// GET /forms/:id/target-students - Récupérer les étudiants cibles d'un formulaire
+router.get('/:id/target-students', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const form = await Form.findById(id)
+      .populate('students', 'firstName lastName studentNumber')
+      .populate('groups', 'name')
+      .populate('subgroups', 'name type')
+      .populate('promotion', 'name year');
+      
+    if (!form) {
+      return res.status(404).json({ message: 'Formulaire non trouvé.' });
+    }
+    
+    let students = [];
+    
+    if (form.associationType === 'student') {
+      // Pour les formulaires associés directement à des étudiants
+      students = form.students;
+    } else if (form.associationType === 'group') {
+      // Pour les formulaires associés à des groupes, récupérer tous les étudiants des groupes
+      students = await Student.find({ groups: { $in: form.groups } })
+        .select('firstName lastName studentNumber groups');
+    } else if (form.associationType === 'subgroup') {
+      // Pour les formulaires associés à des sous-groupes, récupérer tous les étudiants des sous-groupes
+      students = await Student.find({ subgroups: { $in: form.subgroups } })
+        .select('firstName lastName studentNumber subgroups');
+    } else if (form.associationType === 'promotion') {
+      // Pour les formulaires associés à une promotion, récupérer tous les étudiants de la promotion
+      students = await Student.find({ promotions: form.promotion })
+        .select('firstName lastName studentNumber promotions');
+    }
+    
+    res.status(200).json({ 
+      formId: form._id,
+      title: form.title,
+      associationType: form.associationType,
+      targetStudents: students 
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
+// GET /forms/:id/criteria - Récupérer les critères d'un formulaire avec leur type de notation
+router.get('/:id/criteria', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const form = await Form.findById(id).select('title sections');
+    if (!form) {
+      return res.status(404).json({ message: 'Formulaire non trouvé.' });
+    }
+    
+    // Extraire les critères et leur type de notation
+    const criteria = [];
+    
+    form.sections.forEach(section => {
+      section.lines.forEach(line => {
+        criteria.push({
+          lineId: line._id,
+          sectionTitle: section.title,
+          title: line.title,
+          maxScore: line.maxScore,
+          type: line.type,
+          notationType: line.notationType
+        });
+      });
+    });
+    
+    res.status(200).json({ 
+      formId: form._id,
+      title: form.title,
+      criteria 
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
 });
 
