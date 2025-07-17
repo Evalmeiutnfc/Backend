@@ -22,5 +22,6 @@ app.use('/api/evaluations', require('./routes/evaluation.routes'));
 app.use('/api/promotions', require('./routes/promotion.routes'));
 app.use('/api/groups', require('./routes/group.routes'));
 app.use('/api/subgroups', require('./routes/subgroup.routes'));
+app.use('/api/stats', require('./routes/stats.routes')); 
 
 module.exports = app;
