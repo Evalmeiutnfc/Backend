@@ -17,12 +17,24 @@ router.post('/add', requireAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Année invalide. Doit être BUT1, BUT2 ou BUT3.' });
     }
     
+    // S'assurer que la promotion actuelle est incluse dans la liste des promotions
+    let updatedPromotions = promotions ? [...promotions] : [];
+    if (currentPromotion && !updatedPromotions.includes(currentPromotion)) {
+      updatedPromotions.push(currentPromotion);
+    }
+    
+    // S'assurer que le groupe actuel est inclus dans la liste des groupes
+    let updatedGroups = groups ? [...groups] : [];
+    if (currentGroup && !updatedGroups.includes(currentGroup)) {
+      updatedGroups.push(currentGroup);
+    }
+    
     const student = new Student({
       firstName,
       lastName,
       year,
-      promotions,
-      groups,
+      promotions: updatedPromotions,
+      groups: updatedGroups,
       studentNumber,
       currentPromotion,
       currentGroup
@@ -87,9 +99,30 @@ router.put('/update/:id', requireAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Année invalide. Doit être BUT1, BUT2 ou BUT3.' });
     }
     
+    // Préparer les données de mise à jour
+    const updateData = { firstName, lastName, year, subgroups, studentNumber, currentPromotion, currentGroup };
+    
+    // S'assurer que la promotion actuelle est incluse dans la liste des promotions
+    if (promotions || currentPromotion) {
+      let updatedPromotions = promotions ? [...promotions] : [];
+      if (currentPromotion && !updatedPromotions.includes(currentPromotion)) {
+        updatedPromotions.push(currentPromotion);
+      }
+      updateData.promotions = updatedPromotions;
+    }
+    
+    // S'assurer que le groupe actuel est inclus dans la liste des groupes
+    if (groups || currentGroup) {
+      let updatedGroups = groups ? [...groups] : [];
+      if (currentGroup && !updatedGroups.includes(currentGroup)) {
+        updatedGroups.push(currentGroup);
+      }
+      updateData.groups = updatedGroups;
+    }
+    
     const student = await Student.findByIdAndUpdate(
       id, 
-      { firstName, lastName, year, promotions, groups, subgroups, studentNumber, currentPromotion, currentGroup }, 
+      updateData, 
       { new: true }
     ).populate('promotions', 'name year').populate('groups', 'name year').populate('currentPromotion', 'name year').populate('currentGroup', 'name year').populate('subgroups', 'name type');
     
@@ -180,6 +213,65 @@ router.put('/:id/update-affiliations', requireAdmin, async (req, res) => {
 
     await student.save();
     res.json({ message: 'Affiliations mises à jour avec succès.', student });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
+// Récupérer les étudiants d'une promotion
+router.get('/by-promotion/:promotionId', async (req, res) => {
+  try {
+    const { promotionId } = req.params;
+    const students = await Student.find({ promotions: promotionId })
+      .populate('promotions', 'name year')
+      .populate('groups', 'name year')
+      .populate('subgroups', 'name type');
+
+    res.json({ students });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
+// Récupérer les étudiants d'un groupe
+router.get('/by-group/:groupId', async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const students = await Student.find({ groups: groupId })
+      .populate('promotions', 'name year')
+      .populate('groups', 'name year')
+      .populate('subgroups', 'name type');
+
+    res.json({ students });
+  } catch (err) {
+    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+  }
+});
+
+// Récupérer les étudiants d'un sous-groupe
+router.get('/by-subgroup/:subgroupId', async (req, res) => {
+  try {
+    const { subgroupId } = req.params;
+    const SubGroup = require('../models/SubGroup'); // Import du modèle SubGroup
+
+    // 1. Trouver le sous-groupe par son ID
+    const subgroup = await SubGroup.findById(subgroupId)
+      // 2. Populer (récupérer les détails) des étudiants associés
+      .populate({
+        path: 'students',
+        populate: [ // Populer les détails des étudiants eux-mêmes
+          { path: 'promotions', select: 'name year' },
+          { path: 'groups', select: 'name year' },
+          { path: 'subgroups', select: 'name type' }
+        ]
+      });
+
+    if (!subgroup) {
+      return res.status(404).json({ message: 'Sous-groupe non trouvé.' });
+    }
+
+    // 3. Retourner la liste des étudiants du sous-groupe
+    res.json({ students: subgroup.students || [] });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }

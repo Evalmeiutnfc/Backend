@@ -1,5 +1,6 @@
 const express = require('express');
 const Group = require('../models/Group');
+const Promotion = require('../models/Promotion'); // Ajout de l'import
 const { verifyToken, requireAdmin } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -63,12 +64,21 @@ router.post('/add', requireAdmin, async (req, res) => {
     });
     
     await group.save();
+
+    // Mettre à jour la promotion pour y ajouter le nouveau groupe
+    const promotionDoc = await Promotion.findById(promotion);
+    if (promotionDoc) {
+      if (!promotionDoc.groups.includes(group._id)) {
+        promotionDoc.groups.push(group._id);
+        await promotionDoc.save();
+      }
+    }
     
     // Populer les données pour la réponse
     await group.populate('promotion', 'name year');
     
     res.status(201).json({
-      message: 'Groupe créé avec succès.',
+      message: 'Groupe créé avec succès et promotion mise à jour.',
       group
     });
   } catch (error) {
@@ -141,26 +151,41 @@ router.get('/:id', verifyToken, async (req, res) => {
 // PUT /groups/update/:id - Mettre à jour un groupe
 router.put('/update/:id', requireAdmin, async (req, res) => {
   try {
-    const { name, promotion, description } = req.body;
-    
+    const { name, promotion: newPromotionId, description } = req.body;
+
+    // 1. Récupérer l'état actuel du groupe avant la mise à jour
+    const groupToUpdate = await Group.findById(req.params.id);
+    if (!groupToUpdate) {
+      return res.status(404).json({ message: 'Groupe non trouvé.' });
+    }
+    const oldPromotionId = groupToUpdate.promotion;
+
+    // 2. Préparer les données de mise à jour
     const updateData = {};
     if (name !== undefined) updateData.name = name;
-    if (promotion !== undefined) updateData.promotion = promotion;
+    if (newPromotionId !== undefined) updateData.promotion = newPromotionId;
     if (description !== undefined) updateData.description = description;
-    
-    const group = await Group.findByIdAndUpdate(
+
+    // 3. Mettre à jour le groupe
+    const updatedGroup = await Group.findByIdAndUpdate(
       req.params.id,
       updateData,
       { new: true }
     ).populate('promotion', 'name year').populate('subgroups', 'name type');
-    
-    if (!group) {
-      return res.status(404).json({ message: 'Groupe non trouvé.' });
+
+    // 4. Mettre à jour les promotions si elle a changé
+    if (newPromotionId && oldPromotionId.toString() !== newPromotionId.toString()) {
+      // Retirer le groupe de l'ancienne promotion
+      if (oldPromotionId) {
+        await Promotion.findByIdAndUpdate(oldPromotionId, { $pull: { groups: groupToUpdate._id } });
+      }
+      // Ajouter le groupe à la nouvelle promotion
+      await Promotion.findByIdAndUpdate(newPromotionId, { $addToSet: { groups: groupToUpdate._id } });
     }
     
     res.json({
       message: 'Groupe mis à jour avec succès.',
-      group
+      group: updatedGroup
     });
   } catch (error) {
     res.status(500).json({ message: error.message });

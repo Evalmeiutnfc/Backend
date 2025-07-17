@@ -1,5 +1,6 @@
 const express = require('express');
 const SubGroup = require('../models/SubGroup');
+const Student = require('../models/Student'); // Ajout de l'import
 const { verifyToken, requireAdmin } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -13,7 +14,16 @@ router.post('/add', requireAdmin, async (req, res) => {
   try {
     const subGroup = new SubGroup({ name, type, group, promotion, students });
     await subGroup.save();
-    res.status(201).json({ message: 'Sous-groupe ajouté avec succès.', subGroup });
+
+    // Mettre à jour les étudiants pour y ajouter le nouveau sous-groupe
+    if (students && students.length > 0) {
+      await Student.updateMany(
+        { _id: { $in: students } },
+        { $addToSet: { subgroups: subGroup._id } }
+      );
+    }
+
+    res.status(201).json({ message: 'Sous-groupe ajouté avec succès et étudiants mis à jour.', subGroup });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
@@ -35,18 +45,44 @@ router.get('/list', async (req, res) => {
 // Mettre à jour un sous-groupe
 router.put('/update/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { name, type, students } = req.body;
+  const { name, type, students: newStudents } = req.body;
   try {
-    const subGroup = await SubGroup.findByIdAndUpdate(
+    // 1. Récupérer l'état actuel du sous-groupe
+    const subGroupToUpdate = await SubGroup.findById(id);
+    if (!subGroupToUpdate) {
+      return res.status(404).json({ message: 'Sous-groupe non trouvé.' });
+    }
+    const oldStudents = subGroupToUpdate.students.map(s => s.toString());
+
+    // 2. Mettre à jour le sous-groupe
+    const updatedSubGroup = await SubGroup.findByIdAndUpdate(
       id,
-      { name, type, students },
+      { name, type, students: newStudents },
       { new: true }
     ).populate('group', 'name').populate('promotion', 'name year').populate('students', 'firstName lastName');
 
-    if (!subGroup) {
-      return res.status(404).json({ message: 'Sous-groupe non trouvé.' });
+    // 3. Gérer les changements d'étudiants
+    const newStudentsStr = newStudents ? newStudents.map(s => s.toString()) : [];
+    
+    // Étudiants retirés
+    const removedStudents = oldStudents.filter(studentId => !newStudentsStr.includes(studentId));
+    if (removedStudents.length > 0) {
+      await Student.updateMany(
+        { _id: { $in: removedStudents } },
+        { $pull: { subgroups: id } }
+      );
     }
-    res.json({ message: 'Sous-groupe mis à jour avec succès.', subGroup });
+
+    // Étudiants ajoutés
+    const addedStudents = newStudentsStr.filter(studentId => !oldStudents.includes(studentId));
+    if (addedStudents.length > 0) {
+      await Student.updateMany(
+        { _id: { $in: addedStudents } },
+        { $addToSet: { subgroups: id } }
+      );
+    }
+
+    res.json({ message: 'Sous-groupe mis à jour avec succès et étudiants synchronisés.', subGroup: updatedSubGroup });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
@@ -60,7 +96,16 @@ router.delete('/delete/:id', requireAdmin, async (req, res) => {
     if (!subGroup) {
       return res.status(404).json({ message: 'Sous-groupe non trouvé.' });
     }
-    res.json({ message: 'Sous-groupe supprimé avec succès.' });
+
+    // Retirer la référence de ce sous-groupe chez tous les étudiants concernés
+    if (subGroup.students && subGroup.students.length > 0) {
+      await Student.updateMany(
+        { _id: { $in: subGroup.students } },
+        { $pull: { subgroups: subGroup._id } }
+      );
+    }
+
+    res.json({ message: 'Sous-groupe supprimé avec succès et étudiants mis à jour.' });
   } catch (err) {
     res.status(500).json({ message: 'Erreur serveur.', error: err.message });
   }
