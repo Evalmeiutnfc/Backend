@@ -3,6 +3,17 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { authenticate } = require('../middlewares/auth');
+const { requireAdmin, preventSelfModification } = require('../middlewares/admin');
+const {
+  handleServerError,
+  findUserById,
+  validateRole,
+  checkEmailDuplicate,
+  checkLoginDuplicate,
+  hashPassword,
+  validatePasswordLength,
+  formatUserResponse
+} = require('../utils/userUtils');
 
 const router = express.Router();
 
@@ -10,7 +21,7 @@ const router = express.Router();
 router.post('/register', async (req, res) => {
   const { firstName, lastName, email, login, password, role } = req.body;
   try {
-    const existingUser = await User.findOne({ email });
+    const existingUser = await checkEmailDuplicate(email);
     if (existingUser) {
       return res.status(400).json({ message: 'Email déjà utilisé.' });
     }
@@ -19,7 +30,7 @@ router.post('/register', async (req, res) => {
     await user.save();
     res.status(201).json({ message: 'Utilisateur créé avec succès.' });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -45,20 +56,19 @@ router.post('/login', async (req, res) => {
 
     res.status(200).json({ token, user: { id: user._id, login, role: user.role } });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
 // Récupérer le profil utilisateur connecté
 router.get('/profile', authenticate, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
-    if (!user) {
-      return res.status(404).json({ message: 'Utilisateur non trouvé.' });
-    }
+    const user = await findUserById(req.user.id, res);
+    if (!user) return;
+    
     res.status(200).json(user);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -68,7 +78,7 @@ router.put('/profile', authenticate, async (req, res) => {
   try {
     // Vérifier si l'email n'est pas déjà utilisé par un autre utilisateur
     if (email) {
-      const existingUser = await User.findOne({ email, _id: { $ne: req.user.id } });
+      const existingUser = await checkEmailDuplicate(email, req.user.id);
       if (existingUser) {
         return res.status(400).json({ message: 'Email déjà utilisé par un autre utilisateur.' });
       }
@@ -89,7 +99,7 @@ router.put('/profile', authenticate, async (req, res) => {
       user: updatedUser 
     });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -105,7 +115,7 @@ router.put('/change-password', authenticate, async (req, res) => {
   }
 
   // Validation de la longueur du nouveau mot de passe
-  if (newPassword.length < 6) {
+  if (!validatePasswordLength(newPassword)) {
     return res.status(400).json({ 
       message: 'Le nouveau mot de passe doit contenir au moins 6 caractères.' 
     });
@@ -124,15 +134,14 @@ router.put('/change-password', authenticate, async (req, res) => {
     }
 
     // Hasher le nouveau mot de passe
-    const saltRounds = 10;
-    const hashedNewPassword = await bcrypt.hash(newPassword, saltRounds);
+    const hashedNewPassword = await hashPassword(newPassword);
 
     // Mettre à jour le mot de passe
     await User.findByIdAndUpdate(req.user.id, { password: hashedNewPassword });
 
     res.status(200).json({ message: 'Mot de passe modifié avec succès.' });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
@@ -161,48 +170,31 @@ router.delete('/delete-account', authenticate, async (req, res) => {
 
     res.status(200).json({ message: 'Compte supprimé avec succès.' });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
 // Lister tous les utilisateurs (admin seulement)
-router.get('/users', authenticate, async (req, res) => {
+router.get('/users', authenticate, requireAdmin, async (req, res) => {
   try {
-    // Vérifier si l'utilisateur est admin
-    const currentUser = await User.findById(req.user.id);
-    if (!currentUser || currentUser.role !== 'admin') {
-      return res.status(403).json({ message: 'Accès non autorisé. Droits administrateur requis.' });
-    }
-
     const users = await User.find().select('-password').sort({ createdAt: -1 });
     res.status(200).json(users);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
 // Mettre à jour le rôle d'un utilisateur (admin seulement)
-router.put('/users/:id/role', authenticate, async (req, res) => {
+router.put('/users/:id/role', authenticate, requireAdmin, preventSelfModification, async (req, res) => {
   const { id } = req.params;
   const { role } = req.body;
 
   // Validation du rôle
-  if (!role || !['admin', 'user'].includes(role)) {
-    return res.status(400).json({ message: 'Rôle invalide. Valeurs acceptées: admin, user.' });
+  if (!validateRole(role)) {
+    return res.status(400).json({ message: 'Rôle invalide. Valeurs acceptées: admin, professor.' });
   }
 
   try {
-    // Vérifier si l'utilisateur est admin
-    const currentUser = await User.findById(req.user.id);
-    if (!currentUser || currentUser.role !== 'admin') {
-      return res.status(403).json({ message: 'Accès non autorisé. Droits administrateur requis.' });
-    }
-
-    // Empêcher un admin de modifier son propre rôle
-    if (req.user.id === id) {
-      return res.status(400).json({ message: 'Vous ne pouvez pas modifier votre propre rôle.' });
-    }
-
     const updatedUser = await User.findByIdAndUpdate(
       id,
       { role },
@@ -218,27 +210,19 @@ router.put('/users/:id/role', authenticate, async (req, res) => {
       user: updatedUser 
     });
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
 // Vérifier la validité du token
 router.get('/verify-token', authenticate, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select('-password');
-    if (!user) {
-      return res.status(404).json({ message: 'Utilisateur non trouvé.' });
-    }
+    const user = await findUserById(req.user.id, res);
+    if (!user) return;
+    
     res.status(200).json({ 
       valid: true, 
-      user: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        login: user.login,
-        role: user.role
-      }
+      user: formatUserResponse(user)
     });
   } catch (err) {
     res.status(401).json({ valid: false, message: 'Token invalide.' });
@@ -253,32 +237,187 @@ router.post('/logout', authenticate, async (req, res) => {
 });
 
 // Récupérer les utilisateurs avec le rôle de professeur
-router.get('/users/professors', authenticate, async (req, res) => {
+router.get('/users/professors', authenticate, requireAdmin, async (req, res) => {
   try {
-    const currentUser = await User.findById(req.user.id);
-    if (!currentUser || currentUser.role !== 'admin') {
-      return res.status(403).json({ message: 'Accès non autorisé. Droits administrateur requis.' });
-    }
-
     const professors = await User.find({ role: 'professor' }).select('-password').sort({ createdAt: -1 });
     res.status(200).json(professors);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
   }
 });
 
 // Récupérer les utilisateurs avec le rôle d'administrateur
-router.get('/users/admins', authenticate, async (req, res) => {
+router.get('/users/admins', authenticate, requireAdmin, async (req, res) => {
   try {
-    const currentUser = await User.findById(req.user.id);
-    if (!currentUser || currentUser.role !== 'admin') {
-      return res.status(403).json({ message: 'Accès non autorisé. Droits administrateur requis.' });
-    }
-
     const admins = await User.find({ role: 'admin' }).select('-password').sort({ createdAt: -1 });
     res.status(200).json(admins);
   } catch (err) {
-    res.status(500).json({ message: 'Erreur serveur.', error: err.message });
+    handleServerError(res, err);
+  }
+});
+
+// Supprimer un utilisateur (admin seulement)
+router.delete('/users/:id', authenticate, requireAdmin, preventSelfModification, async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const deletedUser = await User.findByIdAndDelete(id);
+    if (!deletedUser) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé.' });
+    }
+
+    res.status(200).json({ 
+      message: 'Utilisateur supprimé avec succès.',
+      deletedUser: formatUserResponse(deletedUser)
+    });
+  } catch (err) {
+    handleServerError(res, err);
+  }
+});
+
+// Rechercher des utilisateurs avec filtres (admin seulement)
+router.get('/users/search', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { 
+      search, 
+      role, 
+      page = 1, 
+      limit = 10 
+    } = req.query;
+
+    // Construire les filtres
+    const filters = {};
+    
+    if (validateRole(role)) {
+      filters.role = role;
+    }
+
+    if (search) {
+      filters.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { login: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const users = await User.find(filters)
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await User.countDocuments(filters);
+
+    res.status(200).json({
+      users,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit)),
+        hasNextPage: parseInt(page) < Math.ceil(total / parseInt(limit)),
+        hasPrevPage: parseInt(page) > 1
+      }
+    });
+  } catch (err) {
+    handleServerError(res, err);
+  }
+});
+
+// Réinitialiser le mot de passe d'un utilisateur (admin seulement)
+router.put('/users/:id/reset-password', authenticate, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { newPassword } = req.body;
+
+  // Validation du nouveau mot de passe
+  if (!validatePasswordLength(newPassword)) {
+    return res.status(400).json({ 
+      message: 'Le nouveau mot de passe doit contenir au moins 6 caractères.' 
+    });
+  }
+
+  try {
+    const userToUpdate = await User.findById(id);
+    if (!userToUpdate) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé.' });
+    }
+
+    // Hasher le nouveau mot de passe
+    const hashedNewPassword = await hashPassword(newPassword);
+
+    // Mettre à jour le mot de passe
+    await User.findByIdAndUpdate(id, { password: hashedNewPassword });
+
+    res.status(200).json({ 
+      message: `Mot de passe réinitialisé avec succès pour ${userToUpdate.firstName} ${userToUpdate.lastName}.`,
+      user: formatUserResponse(userToUpdate)
+    });
+  } catch (err) {
+    handleServerError(res, err);
+  }
+});
+
+// Obtenir les informations d'un utilisateur spécifique (admin seulement)
+router.get('/users/:id', authenticate, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const user = await findUserById(id, res);
+    if (!user) return;
+
+    res.status(200).json(user);
+  } catch (err) {
+    handleServerError(res, err);
+  }
+});
+
+// Mettre à jour les informations d'un utilisateur (admin seulement)
+router.put('/users/:id', authenticate, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { firstName, lastName, email, login } = req.body;
+
+  try {
+    // Vérifier si l'email n'est pas déjà utilisé par un autre utilisateur
+    if (email) {
+      const existingUser = await checkEmailDuplicate(email, id);
+      if (existingUser) {
+        return res.status(400).json({ message: 'Email déjà utilisé par un autre utilisateur.' });
+      }
+    }
+
+    // Vérifier si le login n'est pas déjà utilisé par un autre utilisateur
+    if (login) {
+      const existingUser = await checkLoginDuplicate(login, id);
+      if (existingUser) {
+        return res.status(400).json({ message: 'Login déjà utilisé par un autre utilisateur.' });
+      }
+    }
+
+    const updateData = {};
+    if (firstName !== undefined) updateData.firstName = firstName;
+    if (lastName !== undefined) updateData.lastName = lastName;
+    if (email !== undefined) updateData.email = email;
+    if (login !== undefined) updateData.login = login;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé.' });
+    }
+
+    res.status(200).json({ 
+      message: 'Informations utilisateur mises à jour avec succès.', 
+      user: updatedUser 
+    });
+  } catch (err) {
+    handleServerError(res, err);
   }
 });
 
